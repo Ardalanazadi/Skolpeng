@@ -1,0 +1,196 @@
+Option Explicit
+
+' ============================
+' Export till excel
+' ============================
+' Exportera alla "Skolpeng- …"-flikar till vald mapp
+' En .xlsx per flik, döpt efter flikens namn
+' Skippar flikar som är helt tomma
+' Mac/Windows-säker; ingen ActiveX
+' (Makronamn oförändrat för bakåtkompatibilitet)
+' ============================
+
+Public Sub ExportSkolpengSheets_EXCEL()
+    Dim exportPath As String
+    exportPath = PickFolderPath()
+    If Len(exportPath) = 0 Then
+        MsgBox "Ingen mapp vald. Avbryter.", vbInformation
+        Exit Sub
+    End If
+    exportPath = EnsureTrailingSlash(exportPath)
+
+    Dim ws As Worksheet
+    Dim savedX As Long, skipped As Long
+    Dim errList As String
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    On Error GoTo CleanFail
+
+    For Each ws In ActiveWorkbook.Worksheets
+    If Left$(ws.name, 12) = "Avstämning- " Then
+
+        ' --- SKIPPA HELT TOMMA FLIKAR ---
+        If Not HasExportableContent(ws) Then
+            skipped = skipped + 1
+            GoTo NextSheet
+        End If
+
+        Dim wbNew As Workbook
+        Dim baseName As String
+        Dim xlsxPath As String
+
+        baseName = SafeFileName(ws.name)
+
+        ' --- Spara .xlsx ---
+        xlsxPath = AvoidOverwrite(exportPath & baseName & ".xlsx")
+
+        ws.Copy
+        Set wbNew = ActiveWorkbook
+
+        On Error Resume Next
+        wbNew.SaveAs fileName:=xlsxPath, FileFormat:=xlOpenXMLWorkbook
+        If Err.Number <> 0 Then
+            errList = errList & vbCrLf & "• " & ws.name & " ? " & xlsxPath & "  (XLSX: " & Err.Description & ")"
+            skipped = skipped + 1
+            Err.Clear
+        Else
+            savedX = savedX + 1
+        End If
+        On Error GoTo CleanFail
+
+        wbNew.Close SaveChanges:=False
+        Set wbNew = Nothing
+    End If
+NextSheet:
+Next ws
+
+    Dim msg As String
+    msg = "Export klar." & vbCrLf & _
+          "XLSX: " & savedX & vbCrLf & _
+          "Hoppade över: " & skipped
+    If Len(errList) > 0 Then msg = msg & vbCrLf & vbCrLf & "Fel:" & errList
+    MsgBox msg, vbInformation
+    GoTo CleanExit
+
+CleanFail:
+    MsgBox "Export avbröts: " & Err.Description, vbCritical
+
+CleanExit:
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+End Sub
+
+' ----------------------------
+' Tom-kontroll (”exportbar” = har något innehåll alls)
+' ----------------------------
+Private Function HasExportableContent(ByVal ws As Worksheet) As Boolean
+    Dim ur As Range
+    On Error Resume Next
+    Set ur = ws.UsedRange
+    On Error GoTo 0
+
+    If ur Is Nothing Then
+        HasExportableContent = False
+    Else
+        HasExportableContent = (Application.WorksheetFunction.CountA(ur) > 0)
+    End If
+End Function
+
+' ----------------------------
+' Välj mapp (Windows/Mac)
+' ----------------------------
+Private Function PickFolderPath() As String
+    On Error GoTo TryAppleScript
+
+    Dim fd As Object ' FileDialog
+    Set fd = Application.FileDialog(msoFileDialogFolderPicker)
+    With fd
+        .title = "Välj exportmapp"
+        .AllowMultiSelect = False
+        If .Show = -1 Then
+            PickFolderPath = .SelectedItems(1)
+        Else
+            PickFolderPath = ""
+        End If
+    End With
+    Exit Function
+
+TryAppleScript:
+#If Mac Then
+    Dim script As String, result As String
+    script = "set theFolder to POSIX path of (choose folder with prompt ""Välj exportmapp"")"
+    On Error Resume Next
+    result = MacScript(script)
+    On Error GoTo 0
+    PickFolderPath = result
+#Else
+    PickFolderPath = ""
+#End If
+End Function
+
+' ----------------------------
+' Säker avslut på sökväg
+' ----------------------------
+Private Function EnsureTrailingSlash(ByVal p As String) As String
+    If Right$(p, 1) = "\" Or Right$(p, 1) = "/" Or Right$(p, 1) = ":" Then
+        EnsureTrailingSlash = p
+    Else
+        EnsureTrailingSlash = p & IIf(IsMac(), "/", "\")
+    End If
+End Function
+
+' ----------------------------
+' Är vi på Mac?
+' ----------------------------
+Private Function IsMac() As Boolean
+    IsMac = InStr(Application.OperatingSystem, "Mac") > 0
+End Function
+
+' ----------------------------
+' Säkert filnamn baserat på fliknamn
+' ----------------------------
+Private Function SafeFileName(ByVal s As String) As String
+    Dim t As String
+    t = s
+    t = Replace$(t, "\", " ")
+    t = Replace$(t, "/", " ")
+    t = Replace$(t, ":", " ")
+    t = Replace$(t, "*", " ")
+    t = Replace$(t, "?", " ")
+    t = Replace$(t, """", " ")
+    t = Replace$(t, "<", " ")
+    t = Replace$(t, ">", " ")
+    t = Replace$(t, "|", " ")
+    t = Replace$(t, Chr(160), " ")
+    t = Trim$(t)
+    Do While InStr(t, "  ") > 0
+        t = Replace$(t, "  ", " ")
+    Loop
+    If Len(t) > 150 Then t = Left$(t, 150)
+    SafeFileName = t
+End Function
+
+' ----------------------------
+' Undvik att skriva över befintlig fil
+' ----------------------------
+Private Function AvoidOverwrite(ByVal fullPath As String) As String
+    Dim base As String, ext As String, n As Long, dotPos As Long
+    dotPos = InStrRev(fullPath, ".")
+    If dotPos = 0 Then
+        base = fullPath: ext = ""
+    Else
+        base = Left$(fullPath, dotPos - 1)
+        ext = mid$(fullPath, dotPos)
+    End If
+
+    AvoidOverwrite = fullPath
+    If Dir(fullPath) = "" Then Exit Function
+
+    n = 2
+    Do
+        AvoidOverwrite = base & " (" & n & ")" & ext
+        n = n + 1
+    Loop While Dir(AvoidOverwrite) <> ""
+End Function
+
