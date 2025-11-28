@@ -22,6 +22,21 @@ Public Sub ExportSkolpengSheets_EXCEL()
     Dim ws As Worksheet
     Dim savedX As Long, skipped As Long
     Dim errList As String
+    Dim monthPrefix As String
+    Dim prefixChoice As Variant
+
+    prefixChoice = Application.InputBox( _
+        Prompt:="Prefix för fliknamn (t.ex. 2024-03)", _
+        Title:="Månadsprefix", _
+        Default:=Format(Date, "yyyy-mm"), _
+        Type:=2)
+
+    If prefixChoice = False Then
+        Exit Sub ' Användaren avbröt
+    End If
+
+    monthPrefix = SafeSheetNamePart(prefixChoice)
+    If Len(monthPrefix) = 0 Then monthPrefix = Format(Date, "yyyy-mm")
 
     Application.ScreenUpdating = False
     Application.EnableEvents = False
@@ -37,33 +52,66 @@ Public Sub ExportSkolpengSheets_EXCEL()
         End If
 
         Dim wbNew As Workbook
+        Dim existingWb As Workbook
         Dim baseName As String
         Dim xlsxPath As String
 
         baseName = SafeFileName(ws.name)
 
         ' --- Spara .xlsx ---
-        xlsxPath = AvoidOverwrite(exportPath & baseName & ".xlsx")
+        xlsxPath = exportPath & baseName & ".xlsx"
 
-        ws.Copy
-        Set wbNew = ActiveWorkbook
+        If Dir(xlsxPath) <> "" Then
+            ' Skicka fliken till befintlig arbetsbok och döp om med månadsprefix
+            On Error Resume Next
+            Set existingWb = Workbooks.Open(Filename:=xlsxPath, ReadOnly:=False)
+            If Err.Number <> 0 Then
+                errList = errList & vbCrLf & "• " & ws.name & " → " & xlsxPath & "  (Öppna: " & Err.Description & ")"
+                skipped = skipped + 1
+                Err.Clear
+                On Error GoTo CleanFail
+                GoTo NextSheet
+            End If
+            On Error GoTo CleanFail
 
-        On Error Resume Next
-        wbNew.SaveAs fileName:=xlsxPath, FileFormat:=xlOpenXMLWorkbook
-        If Err.Number <> 0 Then
-            errList = errList & vbCrLf & "• " & ws.name & " ? " & xlsxPath & "  (XLSX: " & Err.Description & ")"
-            skipped = skipped + 1
-            Err.Clear
+            ws.Copy After:=existingWb.Sheets(existingWb.Sheets.Count)
+            Dim newName As String
+            newName = UniqueSheetName(existingWb, monthPrefix & " " & ws.name)
+
+            On Error Resume Next
+            existingWb.ActiveSheet.name = newName
+            If Err.Number <> 0 Then
+                errList = errList & vbCrLf & "• " & ws.name & " → " & xlsxPath & "  (Byta namn: " & Err.Description & ")"
+                skipped = skipped + 1
+                Err.Clear
+                existingWb.Close SaveChanges:=False
+            Else
+                existingWb.Close SaveChanges:=True
+                savedX = savedX + 1
+            End If
+            On Error GoTo CleanFail
+            Set existingWb = Nothing
         Else
-            savedX = savedX + 1
-        End If
-        On Error GoTo CleanFail
+            ws.Copy
+            Set wbNew = ActiveWorkbook
 
-        wbNew.Close SaveChanges:=False
-        Set wbNew = Nothing
+            On Error Resume Next
+            wbNew.SaveAs Filename:=xlsxPath, FileFormat:=xlOpenXMLWorkbook
+            If Err.Number <> 0 Then
+                errList = errList & vbCrLf & "• " & ws.name & " ? " & xlsxPath & "  (XLSX: " & Err.Description & ")"
+                skipped = skipped + 1
+                Err.Clear
+            Else
+                savedX = savedX + 1
+            End If
+            On Error GoTo CleanFail
+
+            wbNew.Close SaveChanges:=False
+            Set wbNew = Nothing
+        End If
     End If
 NextSheet:
-Next ws
+    Next ws
 
     Dim msg As String
     msg = "Export klar." & vbCrLf & _
@@ -172,6 +220,28 @@ Private Function SafeFileName(ByVal s As String) As String
 End Function
 
 ' ----------------------------
+' Rensa bort ogiltiga tecken i bladprefix
+' ----------------------------
+Private Function SafeSheetNamePart(ByVal s As Variant) As String
+    Dim t As String
+    t = Trim$(CStr(s))
+
+    t = Replace$(t, "\\", " ")
+    t = Replace$(t, "/", " ")
+    t = Replace$(t, ":", " ")
+    t = Replace$(t, "*", " ")
+    t = Replace$(t, "?", " ")
+    t = Replace$(t, "[", " ")
+    t = Replace$(t, "]", " ")
+
+    Do While InStr(t, "  ") > 0
+        t = Replace$(t, "  ", " ")
+    Loop
+
+    SafeSheetNamePart = Trim$(t)
+End Function
+
+' ----------------------------
 ' Undvik att skriva över befintlig fil
 ' ----------------------------
 Private Function AvoidOverwrite(ByVal fullPath As String) As String
@@ -181,7 +251,7 @@ Private Function AvoidOverwrite(ByVal fullPath As String) As String
         base = fullPath: ext = ""
     Else
         base = Left$(fullPath, dotPos - 1)
-        ext = mid$(fullPath, dotPos)
+        ext = Mid$(fullPath, dotPos)
     End If
 
     AvoidOverwrite = fullPath
@@ -194,3 +264,39 @@ Private Function AvoidOverwrite(ByVal fullPath As String) As String
     Loop While Dir(AvoidOverwrite) <> ""
 End Function
 
+' ----------------------------
+' Unik bladfliksrubrik med längdbegränsning
+' ----------------------------
+Private Function UniqueSheetName(ByVal wb As Workbook, ByVal desired As String) As String
+    Dim base As String, candidate As String, n As Long, suffix As String
+    base = Trim$(Left$(desired, 31))
+    candidate = base
+
+    If Not SheetNameExists(wb, candidate) Then
+        UniqueSheetName = candidate
+        Exit Function
+    End If
+
+    n = 1
+    Do
+        suffix = " " & CStr(n)
+        candidate = Left$(base, 31 - Len(suffix)) & suffix
+        n = n + 1
+    Loop While SheetNameExists(wb, candidate)
+
+    UniqueSheetName = candidate
+End Function
+
+' ----------------------------
+' Kontrollera om bladnamn redan finns
+' ----------------------------
+Private Function SheetNameExists(ByVal wb As Workbook, ByVal sheetName As String) As Boolean
+    Dim sh As Worksheet
+    For Each sh In wb.Worksheets
+        If StrComp(sh.name, sheetName, vbTextCompare) = 0 Then
+            SheetNameExists = True
+            Exit Function
+        End If
+    Next sh
+    SheetNameExists = False
+End Function
