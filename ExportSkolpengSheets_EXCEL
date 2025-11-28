@@ -43,75 +43,75 @@ Public Sub ExportSkolpengSheets_EXCEL()
     On Error GoTo CleanFail
 
     For Each ws In ActiveWorkbook.Worksheets
-    If Left$(ws.name, 12) = "Avstämning- " Then
+        If Left$(ws.name, 12) = "Avstämning- " Then
 
-        ' --- SKIPPA HELT TOMMA FLIKAR ---
-        If Not HasExportableContent(ws) Then
-            skipped = skipped + 1
-            GoTo NextSheet
-        End If
-
-        Dim wbNew As Workbook
-        Dim existingWb As Workbook
-        Dim baseName As String
-        Dim xlsxPath As String
-
-        baseName = SafeFileName(ws.name)
-
-        ' --- Spara .xlsx ---
-        xlsxPath = exportPath & baseName & ".xlsx"
-
-        If Dir(xlsxPath) <> "" Then
-            ' Skicka fliken till befintlig arbetsbok och döp om med månadsprefix
-            On Error Resume Next
-            Set existingWb = Workbooks.Open(Filename:=xlsxPath, ReadOnly:=False)
-            If Err.Number <> 0 Then
-                errList = errList & vbCrLf & "• " & ws.name & " → " & xlsxPath & "  (Öppna: " & Err.Description & ")"
+            ' --- SKIPPA HELT TOMMA FLIKAR ---
+            If Not HasExportableContent(ws) Then
                 skipped = skipped + 1
-                Err.Clear
-                On Error GoTo CleanFail
                 GoTo NextSheet
             End If
-            On Error GoTo CleanFail
 
-            ws.Copy After:=existingWb.Sheets(existingWb.Sheets.Count)
-            Dim newName As String
-            Dim newSheet As Worksheet
-            Set newSheet = existingWb.Sheets(existingWb.Sheets.Count)
-            newName = UniqueSheetName(existingWb, monthPrefix & " " & ws.name)
+            Dim wbNew As Workbook
+            Dim existingWb As Workbook
+            Dim baseName As String
+            Dim xlsxPath As String
 
-            On Error Resume Next
-            newSheet.name = newName
-            If Err.Number <> 0 Then
-                errList = errList & vbCrLf & "• " & ws.name & " → " & xlsxPath & "  (Byta namn: " & Err.Description & ")"
-                skipped = skipped + 1
-                Err.Clear
-                existingWb.Close SaveChanges:=False
+            baseName = SafeFileName(ws.name)
+
+            ' --- Spara .xlsx ---
+            xlsxPath = exportPath & baseName & ".xlsx"
+
+            If Dir(xlsxPath) <> "" Then
+                ' Skicka fliken till befintlig arbetsbok och döp om med månadsprefix
+                On Error Resume Next
+                Set existingWb = Workbooks.Open(Filename:=xlsxPath, ReadOnly:=False)
+                If Err.Number <> 0 Then
+                    errList = errList & vbCrLf & "• " & ws.name & " → " & xlsxPath & "  (Öppna: " & Err.Description & ")"
+                    skipped = skipped + 1
+                    Err.Clear
+                    On Error GoTo CleanFail
+                    GoTo NextSheet
+                End If
+                On Error GoTo CleanFail
+
+                ws.Copy After:=existingWb.Sheets(existingWb.Sheets.Count)
+                Dim newName As String
+                Dim newSheet As Worksheet
+                Set newSheet = existingWb.Sheets(existingWb.Sheets.Count)
+                newName = UniqueSheetName(existingWb, monthPrefix & " " & ws.name)
+
+                On Error Resume Next
+                newSheet.name = newName
+                If Err.Number <> 0 Then
+                    errList = errList & vbCrLf & "• " & ws.name & " → " & xlsxPath & "  (Byta namn: " & Err.Description & ")"
+                    skipped = skipped + 1
+                    Err.Clear
+                    existingWb.Close SaveChanges:=False
+                Else
+                    existingWb.Close SaveChanges:=True
+                    savedX = savedX + 1
+                End If
+                On Error GoTo CleanFail
+                Set existingWb = Nothing
             Else
-                existingWb.Close SaveChanges:=True
-                savedX = savedX + 1
-            End If
-            On Error GoTo CleanFail
-            Set existingWb = Nothing
-        Else
-            ws.Copy
-            Set wbNew = ActiveWorkbook
+                ws.Copy
+                Set wbNew = ActiveWorkbook
 
-            On Error Resume Next
-            wbNew.SaveAs Filename:=xlsxPath, FileFormat:=xlOpenXMLWorkbook
-            If Err.Number <> 0 Then
-                errList = errList & vbCrLf & "• " & ws.name & " ? " & xlsxPath & "  (XLSX: " & Err.Description & ")"
-                skipped = skipped + 1
-                Err.Clear
-            Else
-                savedX = savedX + 1
-            End If
-            On Error GoTo CleanFail
+                On Error Resume Next
+                wbNew.SaveAs Filename:=xlsxPath, FileFormat:=xlOpenXMLWorkbook
+                If Err.Number <> 0 Then
+                    errList = errList & vbCrLf & "• " & ws.name & " ? " & xlsxPath & "  (XLSX: " & Err.Description & ")"
+                    skipped = skipped + 1
+                    Err.Clear
+                Else
+                    savedX = savedX + 1
+                End If
+                On Error GoTo CleanFail
 
-            wbNew.Close SaveChanges:=False
-            Set wbNew = Nothing
+                wbNew.Close SaveChanges:=False
+                Set wbNew = Nothing
+            End If
         End If
-    End If
 NextSheet:
     Next ws
 
