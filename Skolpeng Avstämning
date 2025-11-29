@@ -971,7 +971,7 @@ Private Function FindHeaderCol(ByVal ws As Worksheet, ByVal headerRow As Long, h
 End Function
 
 Private Function FindHeaderColMulti(ws As Worksheet, headers As Variant, headerRow As Long) As Long
-    Dim c As Long, maxC As Long, i As Long, cellTxt As String
+    Dim c As Long, maxC As Long, i As Long, cellTxt As String, target As String
     If IsEmpty(headers) Then Exit Function
     If headerRow < 1 Then headerRow = 1
     maxC = GetLastColInRow(ws, headerRow)
@@ -979,7 +979,13 @@ Private Function FindHeaderColMulti(ws As Worksheet, headers As Variant, headerR
     For c = 1 To maxC
         cellTxt = NormalizeName(CStr(ws.Cells(headerRow, c).Value2))
         For i = LBound(headers) To UBound(headers)
-            If StrComp(cellTxt, NormalizeName(CStr(headers(i))), vbTextCompare) = 0 Then
+            target = NormalizeName(CStr(headers(i)))
+            If StrComp(cellTxt, target, vbTextCompare) = 0 Then
+                FindHeaderColMulti = c: Exit Function
+            End If
+
+            ' Tillåt även delsträngsträffar (t.ex. "Belopp avser/Prismodell (import)")
+            If InStr(1, cellTxt, target, vbTextCompare) > 0 Then
                 FindHeaderColMulti = c: Exit Function
             End If
         Next i
@@ -1375,8 +1381,7 @@ Private Function CategoryFromPrismodell(ByVal s As String) As String
        Or InStr(1, normalized, "tb okad", vbTextCompare) > 0 _
        Or InStr(1, normalized, "larartäthet", vbTextCompare) > 0 _
        Or InStr(1, normalized, "lärartäthet", vbTextCompare) > 0 _
-       Or InStr(1, normalized, "larartathet", vbTextCompare) > 0 _
-       Or InStr(1, normalized, "larartäthet", vbTextCompare) > 0 Then
+       Or InStr(1, normalized, "larartathet", vbTextCompare) > 0 Then
         CategoryFromPrismodell = "TILL"
         Exit Function
     End If
