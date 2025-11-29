@@ -966,6 +966,10 @@ Private Function FindHeaderRow(ByVal ws As Worksheet, ByVal maxRows As Long) As 
     FindHeaderRow = 0
 End Function
 
+Private Function FindHeaderCol(ByVal ws As Worksheet, ByVal headerRow As Long, headers As Variant) As Long
+    FindHeaderCol = FindHeaderColMulti(ws, headers, headerRow)
+End Function
+
 Private Function FindHeaderColMulti(ws As Worksheet, headers As Variant, headerRow As Long) As Long
     Dim c As Long, maxC As Long, i As Long, cellTxt As String
     If IsEmpty(headers) Then Exit Function
@@ -1331,5 +1335,144 @@ Private Function RowMatchesMonth(ByVal ws As Worksheet, ByVal rowIndex As Long, 
     Else
         RowMatchesMonth = (m = gMonthFilter)
     End If
+End Function
+
+' ==================== UNDERKATEGORI FRÅN PRISMODELL ====================
+Private Function CategoryFromPrismodell(ByVal s As String) As String
+    Dim normalized As String
+    normalized = LCase$(Trim$(CStr(s)))
+
+    If Len(normalized) = 0 Then
+        CategoryFromPrismodell = "SK"
+        Exit Function
+    End If
+
+    If InStr(1, normalized, "modersm", vbTextCompare) > 0 Then
+        CategoryFromPrismodell = "MO"
+        Exit Function
+    End If
+
+    If InStr(1, normalized, "fritids", vbTextCompare) > 0 _
+       Or InStr(1, normalized, "fritidshem", vbTextCompare) > 0 _
+       Or InStr(1, normalized, "fritidsklubb", vbTextCompare) > 0 _
+       Or InStr(1, normalized, "öppen verksamhet", vbTextCompare) > 0 _
+       Or InStr(1, normalized, "oppen verksamhet", vbTextCompare) > 0 Then
+        CategoryFromPrismodell = "FRI"
+        Exit Function
+    End If
+
+    If InStr(1, normalized, "socioekonom", vbTextCompare) > 0 Then
+        CategoryFromPrismodell = "SOC"
+        Exit Function
+    End If
+
+    If InStr(1, normalized, "strukturtillägg", vbTextCompare) > 0 _
+       Or InStr(1, normalized, "strukturtillagg", vbTextCompare) > 0 _
+       Or InStr(1, normalized, "strukturbidrag", vbTextCompare) > 0 _
+       Or InStr(1, normalized, "struktur år", vbTextCompare) > 0 _
+       Or InStr(1, normalized, "struktur ar", vbTextCompare) > 0 _
+       Or InStr(1, normalized, "tb ökad", vbTextCompare) > 0 _
+       Or InStr(1, normalized, "tb okad", vbTextCompare) > 0 _
+       Or InStr(1, normalized, "larartäthet", vbTextCompare) > 0 _
+       Or InStr(1, normalized, "lärartäthet", vbTextCompare) > 0 _
+       Or InStr(1, normalized, "larartathet", vbTextCompare) > 0 _
+       Or InStr(1, normalized, "larartäthet", vbTextCompare) > 0 Then
+        CategoryFromPrismodell = "TILL"
+        Exit Function
+    End If
+
+    CategoryFromPrismodell = "SK"
+End Function
+
+Private Function RubrikMatchesCategory(ByVal rubrik As String, ByVal prisKategori As String) As Boolean
+    Dim normRubrik As String
+    normRubrik = NormalizeName(rubrik)
+
+    Select Case normRubrik
+        Case "skolpeng"
+            RubrikMatchesCategory = (prisKategori = "SK" Or prisKategori = "TILL")
+        Case "modersmal", "modersmalt", "modersmål"
+            RubrikMatchesCategory = (prisKategori = "MO")
+        Case "fritids", "fritidsklubb", "fritidshem"
+            RubrikMatchesCategory = (prisKategori = "FRI")
+        Case "socioekonomisk ersattning", "socioekonomisk ersättning", "socioekonomi"
+            RubrikMatchesCategory = (prisKategori = "SOC")
+        Case "tillägg", "tillagg"
+            RubrikMatchesCategory = (prisKategori = "TILL")
+        Case Else
+            RubrikMatchesCategory = False
+    End Select
+End Function
+
+Private Function SelectRecForRubrik(ByVal recs As Collection, ByVal rubrik As String) As Variant
+    Dim i As Long
+    Dim rec As Variant
+
+    For i = 1 To recs.count
+        rec = recs(i)
+        If IsArray(rec) Then
+            If UBound(rec) >= 3 Then
+                If RubrikMatchesCategory(rubrik, CStr(rec(3))) Then
+                    SelectRecForRubrik = rec
+                    Exit Function
+                End If
+            End If
+        End If
+    Next i
+
+    If recs.count > 0 Then
+        SelectRecForRubrik = recs(1)
+    Else
+        SelectRecForRubrik = Empty
+    End If
+End Function
+
+Private Function ScanSourceForCorrections(ByVal wsSrc As Worksheet, ByVal hdr As Long, ByVal lastR As Long) As Object
+    Dim colPers As Long
+    Dim colBelopp As Long
+    Dim colPrisSrc As Long
+
+    colPers = FindHeaderCol(wsSrc, hdr, Array("personnummer", "person nr", "pers.nr"))
+    colBelopp = FindHeaderCol(wsSrc, hdr, Array("belopp", "belopp (kr)"))
+    colPrisSrc = FindHeaderCol(wsSrc, hdr, Array("belopp avser", "prismodell"))
+
+    If colPers = 0 Or colBelopp = 0 Or colPrisSrc = 0 Then
+        Set ScanSourceForCorrections = Nothing
+        Exit Function
+    End If
+
+    Dim byPerson As Object
+    Set byPerson = CreateObject("Scripting.Dictionary")
+
+    Dim r As Long
+    Dim key As String
+    Dim beloppV As Variant
+    Dim prisV As Variant
+    Dim prisKategori As String
+    Dim rec As Variant
+
+    For r = hdr + 1 To lastR
+        If RowMatchesMonth(wsSrc, r, hdr) Then
+            key = KeyNorm(wsSrc.Cells(r, colPers).Value2)
+            If Len(key) > 0 Then
+                beloppV = wsSrc.Cells(r, colBelopp).Value
+                prisV = wsSrc.Cells(r, colPrisSrc).Value
+                prisKategori = CategoryFromPrismodell(prisV)
+
+                rec = Array(key, beloppV, prisV, prisKategori, r, wsSrc.name, wsSrc.Cells(r, colBelopp).Address(False, False))
+
+                If Not byPerson.Exists(key) Then
+                    Dim bucket As Collection
+                    Set bucket = New Collection
+                    bucket.Add rec
+                    byPerson.Add key, bucket
+                Else
+                    byPerson(key).Add rec
+                End If
+            End If
+        End If
+    Next r
+
+    Set ScanSourceForCorrections = byPerson
 End Function
 
