@@ -1,0 +1,1335 @@
+Option Explicit
+
+' ===================== KONFIG =====================
+Private Const IMPORT_PRI As String = "Importera SS KGr"
+Private Const IMPORT_ALT As String = "Import SS KGr"
+
+Private Const MAX_HEADER_SEARCH As Long = 20
+Private Const YELLOW_LONG As Long = 10284031      ' RGB(255,235,156), "gul = felaktigt utbetalt"
+
+' Kolumnindex i importbladet (logik)
+Private Const COL_KOMM As Long = 15               ' O: Kommun
+Private Const COL_V As Long = 22                  ' V: Modersmål, färg styr tolkning
+Private Const COL_AB As Long = 28                 ' AB: Fritid, färg styr tolkning
+
+' Nyckelkolumner för unika rader (kan vara fasta fortfarande)
+Private Const COL_B As Long = 2                   ' Skola
+Private Const COL_S As Long = 19                  ' År
+Private Const COL_D As Long = 4                   ' Personnummer
+Private Const COL_E As Long = 5                   ' Förnamn
+Private Const COL_F As Long = 6                   ' Efternamn
+
+' Utdata, antal kolumner (dynamisk layout, 14 + Källa)
+Private Const OUT_COLS As Long = 14
+
+' Sektionstitlar
+Private Const TITLE_MISSING  As String = "Skolpeng saknas"
+Private Const TITLE_MM       As String = "Modersmål"
+Private Const TITLE_FRITIDS  As String = "Fritidsklubb"
+Private Const TITLE_NO_FUND  As String = "Elever ska ej ha skolpeng"
+
+' Underrubriker
+Private Const SUB_MM_MISSING As String = "Modersmålspeng saknas för dessa elever."
+Private Const SUB_MM_YELLOW  As String = "Skolpeng avseende modersmål har felaktigt betalats ut."
+Private Const SUB_FR_MISSING As String = "Fritidspeng saknas för dessa elever, bortse från detta om beloppet ska faktureras eller om kommunen inte ersätter efter en viss ålder."
+Private Const SUB_FR_YELLOW  As String = "Fritidspeng avseende Fritids har felaktigt betalats ut."
+
+' Fuzzy
+Private Const FUZZY_THRESHOLD As Double = 0.75
+
+' Bevara Avstämning flikar eller ej
+Private Const PRESERVE_AVSTAMNING_SHEETS As Boolean = True
+
+' ===================== MÅNADSFILTER =====================
+Private gMonthFilter As String                            ' "ÅÅÅÅMM", till exempel "202411"
+Private Const HDR_PERIOD As String = "Integrationsdatum/Beräkningsperiod (import)"
+' =======================================================
+
+' ===================== DYNAMISKA UT KOLUMNER =====================
+Private mOutColsInitialized As Boolean
+Private mColOut_Skola As Long
+Private mColOut_Klass As Long
+Private mColOut_PersFull As Long
+Private mColOut_Fornamn As Long
+Private mColOut_Efternamn As Long
+Private mColOut_Start As Long
+Private mColOut_Slut As Long
+Private mColOut_Fran As Long
+Private mColOut_Till As Long
+Private mColOut_Kommun As Long
+Private mColOut_Ar As Long
+Private mColOut_Belopp As Long
+Private mColOut_Modersmal As Long
+Private mColOut_Omsorgstid As Long
+
+Private Sub EnsureOutputColumns(ByVal wsImp As Worksheet, ByVal hdr As Long)
+    If mOutColsInitialized Then Exit Sub
+
+    mColOut_Skola = FindHeaderColMulti(wsImp, Array("Skola"), hdr)
+    mColOut_Klass = FindHeaderColMulti(wsImp, Array("Klass"), hdr)
+    mColOut_PersFull = FindHeaderColMulti(wsImp, Array("Personnummer", "Person nr", "Pers.nr"), hdr)
+    mColOut_Fornamn = FindHeaderColMulti(wsImp, Array("Förnamn", "Fornamn"), hdr)
+    mColOut_Efternamn = FindHeaderColMulti(wsImp, Array("Efternamn"), hdr)
+    mColOut_Start = FindHeaderColMulti(wsImp, Array("Start", "Startdatum"), hdr)
+    mColOut_Slut = FindHeaderColMulti(wsImp, Array("Slut", "Slutdatum"), hdr)
+    mColOut_Fran = FindHeaderColMulti(wsImp, Array("Från", "Fran"), hdr)
+    mColOut_Till = FindHeaderColMulti(wsImp, Array("Till", "Tilldatum"), hdr)
+    mColOut_Kommun = FindHeaderColMulti(wsImp, Array("Kommun"), hdr)
+    mColOut_Ar = FindHeaderColMulti(wsImp, Array("År", "Ar"), hdr)
+    mColOut_Belopp = FindHeaderColMulti(wsImp, Array("Belopp", "Belopp (kr)"), hdr)
+    mColOut_Modersmal = FindHeaderColMulti(wsImp, Array("Modersmål", "Modersmal"), hdr)
+    mColOut_Omsorgstid = FindHeaderColMulti(wsImp, Array("Omsorgstid", "Omsorgstid (timmar)", "Omsorgstid timmar"), hdr)
+
+    Dim missing As String
+    If mColOut_Skola = 0 Then missing = missing & vbCrLf & "Skola"
+    If mColOut_Klass = 0 Then missing = missing & vbCrLf & "Klass"
+    If mColOut_PersFull = 0 Then missing = missing & vbCrLf & "Personnummer"
+    If mColOut_Fornamn = 0 Then missing = missing & vbCrLf & "Förnamn"
+    If mColOut_Efternamn = 0 Then missing = missing & vbCrLf & "Efternamn"
+    If mColOut_Start = 0 Then missing = missing & vbCrLf & "Start"
+    If mColOut_Slut = 0 Then missing = missing & vbCrLf & "Slut"
+    If mColOut_Fran = 0 Then missing = missing & vbCrLf & "Från"
+    If mColOut_Till = 0 Then missing = missing & vbCrLf & "Till"
+    If mColOut_Kommun = 0 Then missing = missing & vbCrLf & "Kommun"
+    If mColOut_Ar = 0 Then missing = missing & vbCrLf & "År"
+    If mColOut_Belopp = 0 Then missing = missing & vbCrLf & "Belopp"
+    If mColOut_Modersmal = 0 Then missing = missing & vbCrLf & "Modersmål"
+    If mColOut_Omsorgstid = 0 Then missing = missing & vbCrLf & "Omsorgstid"
+
+    If Len(missing) > 0 Then
+        Err.Raise 1004, , "Hittar inte alla nödvändiga kolumner i importbladet. Saknar:" & missing
+    End If
+
+    mOutColsInitialized = True
+End Sub
+
+' ===================== HUVUD =====================
+Public Sub Skolpeng_Avstamning()
+    On Error GoTo FAIL
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+
+    mOutColsInitialized = False
+
+    gMonthFilter = InputBox( _
+        "Ange aktuell månad i format ÅÅÅÅMM, till exempel 202411", _
+        "Skolpeng_Export", Format$(Date, "yyyymm"))
+
+    If gMonthFilter = "" Then
+        GoTo Clean
+    End If
+
+    If Not IsValidMonthCode(gMonthFilter) Then
+        Err.Raise 1004, , "Ogiltigt månadsformat, använd ÅÅÅÅMM."
+    End If
+
+    DeleteSkolpengSheets True
+
+    Dim wsImp As Worksheet
+    Set wsImp = FindImportSheet(ActiveWorkbook)
+    If wsImp Is Nothing Then Err.Raise 1004, , "Hittar inte importfliken (" & IMPORT_PRI & " / " & IMPORT_ALT & ")."
+
+    Dim hdr As Long: hdr = FindHeaderRow(wsImp, MAX_HEADER_SEARCH)
+    If hdr < 1 Then hdr = 1
+
+    Dim lastC As Long: lastC = GetLastColInRow(wsImp, hdr)
+    If lastC < Application.WorksheetFunction.Max(COL_B, COL_S, COL_D, COL_E, COL_F) Then
+        Err.Raise 1004, , "Rubrikraden (" & hdr & ") saknar någon av kolumnerna B,S,D,E,F."
+    End If
+
+    Dim lastR As Long: lastR = GetLastRow(wsImp, COL_KOMM, hdr)
+    If lastR <= hdr Then Err.Raise 1004, , "Inga data under rubriken i importbladet."
+
+    Build_SkolpengSaknas wsImp, hdr, lastR
+    Build_MM_Fritids_Then_NoFund wsImp, hdr, lastR
+
+    MsgBox "Klart, avstämningsflikar har uppdaterats per kommun där det fanns innehåll.", vbInformation
+
+Clean:
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+    Exit Sub
+FAIL:
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+    MsgBox "Fel " & Err.Number & ": " & Err.Description, vbCritical, "Skolpeng_Avstämning"
+End Sub
+
+' ===================== DEL 1, Skolpeng saknas =====================
+Private Sub Build_SkolpengSaknas(ByVal wsImp As Worksheet, ByVal hdr As Long, ByVal lastR As Long)
+    Dim colPers As Long
+    colPers = FindHeaderColMulti(wsImp, Array("Personnummer", "Person nr", "Pers.nr"), hdr)
+    If colPers = 0 Then Exit Sub
+
+    Dim commSet As Collection: Set commSet = New Collection
+    Dim r As Long, k As String
+    For r = hdr + 1 To lastR
+        If RowMatchesMonth(wsImp, r, hdr) Then
+            k = Trim$(CStr(wsImp.Cells(r, COL_KOMM).Value2))
+            If k = "" Then k = "Okänd kommun"
+            If Not CollExists(commSet, k) Then commSet.Add k, k
+        End If
+    Next r
+
+    Dim i As Long, Kommun As String
+    For i = 1 To commSet.count
+        Kommun = CStr(commSet(i))
+        Append_SkolpengSaknas_ForKommun wsImp, hdr, lastR, colPers, Kommun
+    Next i
+End Sub
+
+Private Sub Append_SkolpengSaknas_ForKommun(ByVal wsImp As Worksheet, ByVal hdr As Long, ByVal lastR As Long, ByVal colPers As Long, ByVal Kommun As String)
+    Dim pAll As New Collection
+    Dim pWithFill As New Collection
+
+    Dim r As Long, pnrKey As String
+
+    For r = hdr + 1 To lastR
+        If RowMatchesMonth(wsImp, r, hdr) Then
+            If NormalizeName(CStr(wsImp.Cells(r, COL_KOMM).Value2)) = NormalizeName(Kommun) Then
+                If Len(Trim$(CStr(wsImp.Cells(r, colPers).Value2))) > 0 Then
+                    pnrKey = KeyNorm(wsImp.Cells(r, colPers).Value2)
+                    AddUnique pAll, pnrKey
+                    If Not IsNoFill(wsImp.Cells(r, colPers)) Then AddUnique pWithFill, pnrKey
+                End If
+            End If
+        End If
+    Next r
+
+    Dim seen As New Collection
+    Dim hitRows As New Collection
+    Dim keyBS As String
+
+    For r = hdr + 1 To lastR
+        If RowMatchesMonth(wsImp, r, hdr) Then
+            If NormalizeName(CStr(wsImp.Cells(r, COL_KOMM).Value2)) = NormalizeName(Kommun) Then
+                If Len(Trim$(CStr(wsImp.Cells(r, colPers).Value2))) > 0 Then
+                    pnrKey = KeyNorm(wsImp.Cells(r, colPers).Value2)
+                    If CollExistsByValue(pAll, pnrKey) And Not CollExistsByValue(pWithFill, pnrKey) Then
+                        keyBS = RowKey_BSDEF(wsImp, r)
+                        If Not CollExists(seen, keyBS) Then
+                            seen.Add True, keyBS
+                            hitRows.Add r
+                        End If
+                    End If
+                End If
+            End If
+        End If
+    Next r
+
+    If hitRows.count = 0 Then Exit Sub
+
+    Dim wb As Workbook
+    Set wb = wsImp.Parent
+
+    Dim wsOut As Worksheet
+    Set wsOut = GetOrCreateKommunSheet(wb, Kommun)
+
+    ' hitta eller skapa sektion "Skolpeng saknas" och skriv om den på samma plats
+    Dim startRow As Long
+    Dim existingStart As Long
+    existingStart = FindSectionStartRow(wsOut, TITLE_MISSING)
+
+    If existingStart > 0 Then
+        ClearSectionBlock wsOut, existingStart
+        startRow = existingStart
+    Else
+        startRow = NextAppendRowTight(wsOut)
+        If startRow < 1 Then startRow = 1
+    End If
+
+    Dim cur As Long
+    cur = startRow
+
+    cur = WriteTitle(wsOut, cur, TITLE_MISSING, True)
+    CopyHeaders_BSDEF wsImp, hdr, wsOut, cur
+    wsOut.rows(cur).Font.Bold = True
+    cur = cur + 1
+
+    Dim i As Long, rr As Long
+    For i = 1 To hitRows.count
+        rr = CLng(hitRows(i))
+        CopyRow_BSDEF wsImp, rr, wsOut, cur
+        cur = cur + 1
+    Next i
+
+    On Error Resume Next
+    wsOut.Columns("A:Z").AutoFit
+    On Error GoTo 0
+End Sub
+
+' ========== DEL 2, Modersmål, Fritids, Elever ska ej ha skolpeng ==========
+Private Sub Build_MM_Fritids_Then_NoFund(ByVal wsImp As Worksheet, ByVal hdr As Long, ByVal lastR As Long)
+    Dim commSet As New Collection, r As Long, k As String
+    For r = hdr + 1 To lastR
+        If RowMatchesMonth(wsImp, r, hdr) Then
+            k = Trim$(CStr(wsImp.Cells(r, COL_KOMM).Value2))
+            If k = "" Then k = "Okänd kommun"
+            If Not CollExists(commSet, k) Then On Error Resume Next: commSet.Add k, k: On Error GoTo 0
+        End If
+    Next r
+
+    Dim i As Long
+    For i = 1 To commSet.count
+        Append_MM_Fritids_Then_NoFund_ForKommun wsImp, hdr, lastR, CStr(commSet(i))
+    Next i
+End Sub
+
+Private Sub Append_MM_Fritids_Then_NoFund_ForKommun(ByVal wsImp As Worksheet, _
+                                                    ByVal hdr As Long, ByVal lastR As Long, _
+                                                    ByVal Kommun As String)
+    Dim mmHas As Boolean, frHas As Boolean, nfHas As Boolean
+    Dim mmHasExtra As Boolean, frHasExtra As Boolean
+    Dim colPers As Long
+    Dim colMM As Long
+    Dim colOms As Long
+    Dim noFillPnr As Collection
+    Dim useExtra As Boolean
+
+    ' Baslogik, färg i V och AB
+    mmHas = HasMatches(wsImp, hdr, lastR, Kommun, "V_RED") Or _
+            HasMatches(wsImp, hdr, lastR, Kommun, "V_YELLOW")
+
+    frHas = HasMatches(wsImp, hdr, lastR, Kommun, "AB_RED") Or _
+            HasMatches(wsImp, hdr, lastR, Kommun, "AB_YELLOW")
+
+    ' Extra logik:
+    ' - personnummer har aldrig fyllnadsfärg
+    ' - Omsorgstid = 20  -> Fritidspeng saknas
+    ' - Modersmål = tre bokstäver -> Modersmålspeng saknas
+    colPers = FindHeaderColMulti(wsImp, Array("Personnummer", "Person nr", "Pers.nr"), hdr)
+
+    If colPers > 0 Then
+        Set noFillPnr = GetNoFillPnrForKommun(wsImp, hdr, lastR, colPers, Kommun)
+        useExtra = True
+    Else
+        useExtra = False
+    End If
+
+    If useExtra Then
+        If Not mOutColsInitialized Then
+            EnsureOutputColumns wsImp, hdr
+        End If
+
+        colMM = mColOut_Modersmal
+        colOms = mColOut_Omsorgstid
+
+        Dim r As Long
+        Dim pnrKey As String
+        Dim mmVal As String
+        Dim omsVal As Variant
+
+        For r = hdr + 1 To lastR
+            If RowMatchesMonth(wsImp, r, hdr) Then
+                If NormalizeName(CStr(wsImp.Cells(r, COL_KOMM).Value2)) = NormalizeName(Kommun) Then
+                    If Len(Trim$(CStr(wsImp.Cells(r, colPers).Value2))) > 0 Then
+                        pnrKey = KeyNorm(wsImp.Cells(r, colPers).Value2)
+
+                        If CollExistsByValue(noFillPnr, pnrKey) Then
+                            ' Fritidspeng saknas om omsorgstid = 20
+                            If colOms > 0 Then
+                                omsVal = wsImp.Cells(r, colOms).Value2
+                                If IsTwenty(omsVal) Then
+                                    frHasExtra = True
+                                End If
+                            End If
+
+                            ' Modersmålspeng saknas om modersmål har tre bokstäver
+                            If colMM > 0 Then
+                                mmVal = Trim$(CStr(wsImp.Cells(r, colMM).Value2))
+                                If isThreeLetters(mmVal) Then
+                                    mmHasExtra = True
+                                End If
+                            End If
+                        End If
+                    End If
+                End If
+            End If
+        Next r
+    End If
+
+    ' Slå ihop färg baserade och extra träffar
+    mmHas = mmHas Or mmHasExtra
+    frHas = frHas Or frHasExtra
+
+    nfHas = NoFund_HasAny(wsImp, hdr, lastR, Kommun)
+
+    ' Om inget att skriva, avsluta
+    If Not (mmHas Or frHas Or nfHas) Then Exit Sub
+
+    ' Skapa eller hämta kommunflik
+    Dim wb As Workbook
+    Set wb = wsImp.Parent
+
+    Dim wsOut As Worksheet
+    Set wsOut = GetOrCreateKommunSheet(wb, Kommun)
+
+    Dim startRow As Long
+    Dim existingStart As Long
+
+    ' Hitta befintlig Modersmålssektion och rensa alla relaterade block
+    existingStart = FindSectionStartRow(wsOut, TITLE_MM)
+
+    If existingStart > 0 Then
+        ClearSectionBlock wsOut, existingStart
+        Dim s2 As Long
+        s2 = FindSectionStartRow(wsOut, TITLE_FRITIDS)
+        If s2 > 0 Then ClearSectionBlock wsOut, s2
+        s2 = FindSectionStartRow(wsOut, TITLE_NO_FUND)
+        If s2 > 0 Then ClearSectionBlock wsOut, s2
+        startRow = existingStart
+    Else
+        startRow = NextAppendRow(wsOut)
+        If startRow < 1 Then startRow = 1
+    End If
+
+    Dim cur As Long
+    cur = startRow
+
+    ' Modersmål
+    If mmHas Then
+        cur = WriteTitle(wsOut, cur, TITLE_MM, True)
+        Dim wroteMM As Boolean
+        wroteMM = False
+
+        cur = CopyMatches_Unique(wsImp, wsOut, hdr, lastR, Kommun, _
+                                 SUB_MM_MISSING, "V_RED", cur, wroteMM, _
+                                 useExtra, noFillPnr, "MM_MISSING")
+
+        cur = CopyMatches_Unique(wsImp, wsOut, hdr, lastR, Kommun, _
+                                 SUB_MM_YELLOW, "V_YELLOW", cur, wroteMM)
+
+        If wroteMM Then cur = cur + 1
+    End If
+
+    ' Fritids
+    If frHas Then
+        cur = WriteTitle(wsOut, cur, TITLE_FRITIDS, True)
+        Dim wroteF As Boolean
+        wroteF = False
+
+        cur = CopyMatches_Unique(wsImp, wsOut, hdr, lastR, Kommun, _
+                                 SUB_FR_MISSING, "AB_RED", cur, wroteF, _
+                                 useExtra, noFillPnr, "FR_MISSING")
+
+        cur = CopyMatches_Unique(wsImp, wsOut, hdr, lastR, Kommun, _
+                                 SUB_FR_YELLOW, "AB_YELLOW", cur, wroteF)
+    End If
+
+    ' Elever ska ej ha skolpeng (NoFund)
+    If nfHas Then
+        cur = Append_NoFund_AfterFritids_CopyAll_Unique(wsImp, hdr, lastR, Kommun, wsOut, cur)
+    End If
+
+    wsOut.Columns("A:Z").AutoFit
+End Sub
+
+Private Function NoFund_HasAny(ByVal wsImp As Worksheet, ByVal hdrImp As Long, ByVal lastRImp As Long, ByVal Kommun As String) As Boolean
+    Dim muni As New Collection, r As Long, s As String
+    For r = hdrImp + 1 To lastRImp
+        If RowMatchesMonth(wsImp, r, hdrImp) Then
+            s = Trim$(CStr(wsImp.Cells(r, COL_KOMM).Value2))
+            If s <> "" Then AddUnique muni, s
+        End If
+    Next r
+    If muni.count = 0 Then AddUnique muni, "Okänd kommun"
+
+    Dim ws As Worksheet
+    For Each ws In ActiveWorkbook.Worksheets
+        If ws.name <> wsImp.name And Left$(ws.name, 11) <> "Avstämning-" And ws.name <> "Systemlogg" Then
+            Dim hdr As Long: hdr = FindHeaderRow(ws, MAX_HEADER_SEARCH): If hdr = 0 Then hdr = 1
+            Dim lastR As Long: lastR = GetLastRow(ws, 1, hdr)
+
+            Dim score As Double, best As String
+            best = FuzzyBestMatchFromCollectionWithScore(ExtractMunicipalityCandidate(ws.name), muni, score)
+
+            If best <> "" And score >= FUZZY_THRESHOLD And StrComp(best, Kommun, vbTextCompare) = 0 Then
+                For r = hdr + 1 To lastR
+                    If HasDataNoFill(ws.Cells(r, 1)) Then
+                        NoFund_HasAny = True
+                        Exit Function
+                    End If
+                Next r
+            End If
+        End If
+    Next ws
+    NoFund_HasAny = False
+End Function
+
+Private Function Append_NoFund_AfterFritids_CopyAll_Unique(ByVal wsImp As Worksheet, ByVal hdrImp As Long, ByVal lastRImp As Long, _
+                                                           ByVal Kommun As String, ByVal wsOut As Worksheet, ByVal startRow As Long) As Long
+    Dim cur As Long: cur = startRow
+
+    Dim muni As New Collection, r As Long, s As String
+    For r = hdrImp + 1 To lastRImp
+        If RowMatchesMonth(wsImp, r, hdrImp) Then
+            s = Trim$(CStr(wsImp.Cells(r, COL_KOMM).Value2))
+            If s <> "" Then AddUnique muni, s
+        End If
+    Next r
+    If muni.count = 0 Then AddUnique muni, "Okänd kommun"
+
+    Dim hasAny As Boolean: hasAny = False
+    Dim ws As Worksheet
+
+    For Each ws In ActiveWorkbook.Worksheets
+        If ws.name <> wsImp.name And Left$(ws.name, 11) <> "Avstämning-" And ws.name <> "Systemlogg" Then
+            Dim hdr As Long: hdr = FindHeaderRow(ws, MAX_HEADER_SEARCH): If hdr = 0 Then hdr = 1
+            Dim lastR As Long: lastR = GetLastRow(ws, 1, hdr)
+            Dim score As Double, best As String
+            best = FuzzyBestMatchFromCollectionWithScore(ExtractMunicipalityCandidate(ws.name), muni, score)
+            If best <> "" And score >= FUZZY_THRESHOLD And StrComp(best, Kommun, vbTextCompare) = 0 Then
+                For r = hdr + 1 To lastR
+                    If HasDataNoFill(ws.Cells(r, 1)) Then hasAny = True: Exit For
+                Next r
+                If hasAny Then Exit For
+            End If
+        End If
+    Next ws
+
+    If Not hasAny Then
+        Append_NoFund_AfterFritids_CopyAll_Unique = cur
+        Exit Function
+    End If
+
+    cur = cur + 1
+    cur = WriteTitle(wsOut, cur, TITLE_NO_FUND, True)
+
+    Dim seenFull As Collection: Set seenFull = New Collection
+    Dim headerWritten As Boolean: headerWritten = False
+    Dim hdr2 As Long, lastR2 As Long, lastC2 As Long, rr2 As Long, keyAll As String
+
+    For Each ws In ActiveWorkbook.Worksheets
+        If ws.name <> wsImp.name And Left$(ws.name, 11) <> "Avstämning-" And ws.name <> "Systemlogg" Then
+            hdr2 = FindHeaderRow(ws, MAX_HEADER_SEARCH): If hdr2 = 0 Then hdr2 = 1
+            lastR2 = GetLastRow(ws, 1, hdr2)
+            lastC2 = GetLastColInRow(ws, hdr2)
+
+            Dim score2 As Double, best2 As String
+            best2 = FuzzyBestMatchFromCollectionWithScore(ExtractMunicipalityCandidate(ws.name), muni, score2)
+
+            If best2 <> "" And score2 >= FUZZY_THRESHOLD And StrComp(best2, Kommun, vbTextCompare) = 0 Then
+                If Not headerWritten Then
+                    CopyRangeRow ws, hdr2, lastC2, wsOut, cur
+                    wsOut.rows(cur).Font.Bold = True
+                    wsOut.Cells(cur, lastC2 + 1).value = "Källa"
+                    cur = cur + 1
+                    headerWritten = True
+                End If
+
+                For rr2 = hdr2 + 1 To lastR2
+                    If HasDataNoFill(ws.Cells(rr2, 1)) Then
+                        keyAll = RowKey_All(ws, rr2, lastC2)
+                        If Not CollExists(seenFull, keyAll) Then
+                            CopyRangeRow ws, rr2, lastC2, wsOut, cur
+                            seenFull.Add True, keyAll
+
+                            On Error Resume Next
+                            wsOut.Hyperlinks.Add _
+                                Anchor:=wsOut.Cells(cur, lastC2 + 1), _
+                                Address:="", _
+                                SubAddress:="'" & ws.name & "'!A" & rr2, _
+                                TextToDisplay:="Gå till källa"
+                            On Error GoTo 0
+
+                            cur = cur + 1
+                        End If
+                    End If
+                Next rr2
+            End If
+        End If
+    Next ws
+
+    Append_NoFund_AfterFritids_CopyAll_Unique = cur
+End Function
+
+' ================== FILTER och KOPIERING MM/FRITIDS ==================
+Private Function CopyMatches_Unique(ByVal wsImp As Worksheet, ByVal wsOut As Worksheet, _
+                                    ByVal hdr As Long, ByVal lastR As Long, _
+                                    ByVal Kommun As String, ByVal subTitle As String, _
+                                    ByVal Criteria As String, ByVal startRow As Long, _
+                                    ByRef wroteAny As Boolean, _
+                                    Optional ByVal useExtraRules As Boolean = False, _
+                                    Optional ByVal noFillPnr As Collection = Nothing, _
+                                    Optional ByVal extraMode As String = "") As Long
+    Dim hits As New Collection
+    Dim r As Long
+
+    Dim colPers As Long
+    Dim colMM As Long
+    Dim colOms As Long
+    Dim haveExtras As Boolean
+
+    ' Förbereder extra regler vid behov
+    If useExtraRules Then
+        colPers = FindHeaderColMulti(wsImp, Array("Personnummer", "Person nr", "Pers.nr"), hdr)
+
+        If Not mOutColsInitialized Then
+            EnsureOutputColumns wsImp, hdr
+        End If
+
+        colMM = mColOut_Modersmal
+        colOms = mColOut_Omsorgstid
+
+        haveExtras = (colPers > 0 And Not noFillPnr Is Nothing)
+    Else
+        haveExtras = False
+    End If
+
+    ' Bygger upp lista med radnummer som matchar kriterierna
+    For r = hdr + 1 To lastR
+        If RowMatchesMonth(wsImp, r, hdr) Then
+            If Trim$(CStr(wsImp.Cells(r, COL_KOMM).Value2)) = Kommun Then
+                Dim matchColor As Boolean
+                Dim extraMatch As Boolean
+                matchColor = False
+                extraMatch = False
+
+                ' Ordinarie färglogik
+                Select Case Criteria
+                    Case "V_RED":     If IsRed(wsImp.Cells(r, COL_V)) Then matchColor = True
+                    Case "V_YELLOW":  If IsYellow(wsImp.Cells(r, COL_V)) Then matchColor = True
+                    Case "AB_RED":    If IsRed(wsImp.Cells(r, COL_AB)) Then matchColor = True
+                    Case "AB_YELLOW": If IsYellow(wsImp.Cells(r, COL_AB)) Then matchColor = True
+                End Select
+
+                ' Extra regler kopplade till personnummer utan färg
+                If haveExtras Then
+                    Dim pnrKey As String
+                    If Len(Trim$(CStr(wsImp.Cells(r, colPers).Value2))) > 0 Then
+                        pnrKey = KeyNorm(wsImp.Cells(r, colPers).Value2)
+
+                        If CollExistsByValue(noFillPnr, pnrKey) Then
+                            Select Case extraMode
+                                Case "FR_MISSING"
+                                    If colOms > 0 Then
+                                        If IsTwenty(wsImp.Cells(r, colOms).Value2) Then
+                                            extraMatch = True
+                                        End If
+                                    End If
+
+                                Case "MM_MISSING"
+                                    If colMM > 0 Then
+                                        Dim mmVal As String
+                                        mmVal = Trim$(CStr(wsImp.Cells(r, colMM).Value2))
+                                        If isThreeLetters(mmVal) Then
+                                            extraMatch = True
+                                        End If
+                                    End If
+                            End Select
+                        End If
+                    End If
+                End If
+
+                If matchColor Or extraMatch Then
+                    hits.Add r
+                End If
+            End If
+        End If
+    Next r
+
+    If hits.count = 0 Then
+        CopyMatches_Unique = startRow
+        Exit Function
+    End If
+
+    Dim cur As Long
+    cur = startRow
+
+    ' Skriv underrubrik
+    cur = WriteTitle(wsOut, cur, subTitle, False)
+
+    ' Skriv rubrikrad med de dynamiska kolumnerna
+    CopyHeaders_BSDEF wsImp, hdr, wsOut, cur
+    wsOut.rows(cur).Font.Bold = True
+    cur = cur + 1
+
+    ' Skriv rader, unika enligt BSDEF
+    Dim seen As Collection
+    Set seen = New Collection
+
+    Dim i As Long, rr As Long
+    Dim keyBS As String
+    Dim wrote As Boolean
+
+    wrote = False
+
+    For i = 1 To hits.count
+        rr = hits(i)
+        keyBS = RowKey_BSDEF(wsImp, rr)
+
+        If Not CollExists(seen, keyBS) Then
+            CopyRow_BSDEF wsImp, rr, wsOut, cur
+            seen.Add True, keyBS
+            cur = cur + 1
+            wrote = True
+        End If
+    Next i
+
+    If wrote Then
+        wroteAny = True
+        CopyMatches_Unique = cur + 1
+    Else
+        CopyMatches_Unique = cur
+    End If
+End Function
+
+Private Function HasMatches(ByVal wsImp As Worksheet, ByVal hdr As Long, ByVal lastR As Long, _
+                            ByVal Kommun As String, ByVal Criteria As String) As Boolean
+    Dim r As Long
+    For r = hdr + 1 To lastR
+        If RowMatchesMonth(wsImp, r, hdr) Then
+            If Trim$(CStr(wsImp.Cells(r, COL_KOMM).Value2)) = Kommun Then
+                Select Case Criteria
+                    Case "V_RED":     If IsRed(wsImp.Cells(r, COL_V)) Then HasMatches = True: Exit Function
+                    Case "V_YELLOW":  If IsYellow(wsImp.Cells(r, COL_V)) Then HasMatches = True: Exit Function
+                    Case "AB_RED":    If IsRed(wsImp.Cells(r, COL_AB)) Then HasMatches = True: Exit Function
+                    Case "AB_YELLOW": If IsYellow(wsImp.Cells(r, COL_AB)) Then HasMatches = True: Exit Function
+                End Select
+            End If
+        End If
+    Next r
+End Function
+
+' ======================== KOPIERING BSDEF (dynamiska kolumner + Källa) ========================
+Private Sub CopyHeaders_BSDEF(ByVal wsImp As Worksheet, ByVal hdr As Long, ByVal wsOut As Worksheet, ByVal targetRow As Long)
+    EnsureOutputColumns wsImp, hdr
+
+    Dim arr(1 To 1, 1 To OUT_COLS) As Variant
+    Dim srcCols(1 To OUT_COLS) As Long
+    Dim c As Long
+
+    arr(1, 1) = wsImp.Cells(hdr, mColOut_Skola).Value2
+    arr(1, 2) = wsImp.Cells(hdr, mColOut_Klass).Value2
+    arr(1, 3) = wsImp.Cells(hdr, mColOut_PersFull).Value2
+    arr(1, 4) = wsImp.Cells(hdr, mColOut_Fornamn).Value2
+    arr(1, 5) = wsImp.Cells(hdr, mColOut_Efternamn).Value2
+    arr(1, 6) = wsImp.Cells(hdr, mColOut_Start).Value2
+    arr(1, 7) = wsImp.Cells(hdr, mColOut_Slut).Value2
+    arr(1, 8) = wsImp.Cells(hdr, mColOut_Fran).Value2
+    arr(1, 9) = wsImp.Cells(hdr, mColOut_Till).Value2
+    arr(1, 10) = wsImp.Cells(hdr, mColOut_Kommun).Value2
+    arr(1, 11) = wsImp.Cells(hdr, mColOut_Ar).Value2
+    arr(1, 12) = wsImp.Cells(hdr, mColOut_Belopp).Value2
+    arr(1, 13) = wsImp.Cells(hdr, mColOut_Modersmal).Value2
+    arr(1, 14) = "Fritids"
+
+    wsOut.Cells(targetRow, 1).Resize(1, OUT_COLS).Value2 = arr
+    wsOut.Cells(targetRow, OUT_COLS + 1).value = "Källa"
+
+    ' mappa kolumner i arr till källkolumner för att även kopiera färg
+    srcCols(1) = mColOut_Skola
+    srcCols(2) = mColOut_Klass
+    srcCols(3) = mColOut_PersFull
+    srcCols(4) = mColOut_Fornamn
+    srcCols(5) = mColOut_Efternamn
+    srcCols(6) = mColOut_Start
+    srcCols(7) = mColOut_Slut
+    srcCols(8) = mColOut_Fran
+    srcCols(9) = mColOut_Till
+    srcCols(10) = mColOut_Kommun
+    srcCols(11) = mColOut_Ar
+    srcCols(12) = mColOut_Belopp
+    srcCols(13) = mColOut_Modersmal
+    srcCols(14) = mColOut_Omsorgstid
+
+    For c = 1 To OUT_COLS
+        If srcCols(c) > 0 Then
+            wsOut.Cells(targetRow, c).interior.Color = wsImp.Cells(hdr, srcCols(c)).interior.Color
+        End If
+    Next c
+
+    With wsOut
+        .Columns(6).NumberFormat = "yyyy-mm-dd"
+        .Columns(7).NumberFormat = "yyyy-mm-dd"
+        .Columns(8).NumberFormat = "yyyy-mm-dd"
+        .Columns(9).NumberFormat = "yyyy-mm-dd"
+    End With
+End Sub
+
+Private Sub CopyRow_BSDEF(ByVal wsImp As Worksheet, ByVal srcRow As Long, ByVal wsOut As Worksheet, ByVal targetRow As Long)
+    If Not mOutColsInitialized Then
+        Dim hdr As Long
+        hdr = FindHeaderRow(wsImp, MAX_HEADER_SEARCH)
+        If hdr < 1 Then hdr = 1
+        EnsureOutputColumns wsImp, hdr
+    End If
+
+    Dim arr(1 To 1, 1 To OUT_COLS) As Variant
+    Dim oms As Variant
+    Dim srcCols(1 To OUT_COLS) As Long
+    Dim c As Long
+
+    arr(1, 1) = wsImp.Cells(srcRow, mColOut_Skola).Value2
+    arr(1, 2) = wsImp.Cells(srcRow, mColOut_Klass).Value2
+    arr(1, 3) = FirstEightDigits(wsImp.Cells(srcRow, mColOut_PersFull).Value2)
+    arr(1, 4) = wsImp.Cells(srcRow, mColOut_Fornamn).Value2
+    arr(1, 5) = wsImp.Cells(srcRow, mColOut_Efternamn).Value2
+    arr(1, 6) = wsImp.Cells(srcRow, mColOut_Start).Value2
+    arr(1, 7) = wsImp.Cells(srcRow, mColOut_Slut).Value2
+    arr(1, 8) = wsImp.Cells(srcRow, mColOut_Fran).Value2
+    arr(1, 9) = wsImp.Cells(srcRow, mColOut_Till).Value2
+    arr(1, 10) = wsImp.Cells(srcRow, mColOut_Kommun).Value2
+    arr(1, 11) = wsImp.Cells(srcRow, mColOut_Ar).Value2
+    arr(1, 12) = wsImp.Cells(srcRow, mColOut_Belopp).Value2
+    arr(1, 13) = wsImp.Cells(srcRow, mColOut_Modersmal).Value2
+
+    oms = wsImp.Cells(srcRow, mColOut_Omsorgstid).Value2
+    If IsTwenty(oms) Then
+        arr(1, 14) = "Aktiv"
+    Else
+        arr(1, 14) = oms
+    End If
+
+    wsOut.Cells(targetRow, 1).Resize(1, OUT_COLS).Value2 = arr
+
+    ' mappa och kopiera även färg från källraden
+    srcCols(1) = mColOut_Skola
+    srcCols(2) = mColOut_Klass
+    srcCols(3) = mColOut_PersFull
+    srcCols(4) = mColOut_Fornamn
+    srcCols(5) = mColOut_Efternamn
+    srcCols(6) = mColOut_Start
+    srcCols(7) = mColOut_Slut
+    srcCols(8) = mColOut_Fran
+    srcCols(9) = mColOut_Till
+    srcCols(10) = mColOut_Kommun
+    srcCols(11) = mColOut_Ar
+    srcCols(12) = mColOut_Belopp
+    srcCols(13) = mColOut_Modersmal
+    srcCols(14) = mColOut_Omsorgstid
+
+    For c = 1 To OUT_COLS
+        If srcCols(c) > 0 Then
+            wsOut.Cells(targetRow, c).interior.Color = wsImp.Cells(srcRow, srcCols(c)).interior.Color
+        End If
+    Next c
+
+    On Error Resume Next
+    wsOut.Hyperlinks.Add _
+        Anchor:=wsOut.Cells(targetRow, OUT_COLS + 1), _
+        Address:="", _
+        SubAddress:="'" & wsImp.name & "'!A" & srcRow, _
+        TextToDisplay:="Gå till källa"
+    On Error GoTo 0
+End Sub
+
+' Personnummer, första 8 siffrorna
+Private Function FirstEightDigits(ByVal v As Variant) As String
+    Dim s As String, i As Long, digits As String
+    s = CStr(v)
+    For i = 1 To Len(s)
+        If mid$(s, i, 1) Like "[0-9]" Then
+            digits = digits & mid$(s, i, 1)
+        End If
+    Next i
+
+    If Len(digits) >= 8 Then
+        FirstEightDigits = Left$(digits, 8)
+    Else
+        FirstEightDigits = digits
+    End If
+End Function
+
+' ======================== KOPIERING HEL RAD (NoFund) ========================
+Private Sub CopyRangeRow(ByVal wsSrc As Worksheet, ByVal srcRow As Long, ByVal lastCol As Long, _
+                         ByVal wsOut As Worksheet, ByVal targetRow As Long)
+    ' Kopierar både data och formatering, inklusive färg
+    wsSrc.Cells(srcRow, 1).Resize(1, lastCol).Copy Destination:=wsOut.Cells(targetRow, 1)
+End Sub
+
+' ======================== UNIK NYCKLAR ========================
+Private Function RowKey_BSDEF(ByVal ws As Worksheet, ByVal r As Long) As String
+    RowKey_BSDEF = _
+        KeyNorm(ws.Cells(r, COL_B).Value2) & "§" & _
+        KeyNorm(ws.Cells(r, COL_S).Value2) & "§" & _
+        KeyNorm(ws.Cells(r, COL_D).Value2) & "§" & _
+        KeyNorm(ws.Cells(r, COL_E).Value2) & "§" & _
+        KeyNorm(ws.Cells(r, COL_F).Value2)
+End Function
+
+' ==================== HJÄLP, PERSONNUMMER UTAN FYLLNADSFÄRG ====================
+Private Function GetNoFillPnrForKommun(ByVal wsImp As Worksheet, _
+                                       ByVal hdr As Long, ByVal lastR As Long, _
+                                       ByVal colPers As Long, ByVal Kommun As String) As Collection
+    Dim pAll As New Collection
+    Dim pWithFill As New Collection
+    Dim r As Long
+    Dim pnrKey As String
+
+    For r = hdr + 1 To lastR
+        If RowMatchesMonth(wsImp, r, hdr) Then
+            If NormalizeName(CStr(wsImp.Cells(r, COL_KOMM).Value2)) = NormalizeName(Kommun) Then
+                If Len(Trim$(CStr(wsImp.Cells(r, colPers).Value2))) > 0 Then
+                    pnrKey = KeyNorm(wsImp.Cells(r, colPers).Value2)
+                    AddUnique pAll, pnrKey
+                    If Not IsNoFill(wsImp.Cells(r, colPers)) Then
+                        AddUnique pWithFill, pnrKey
+                    End If
+                End If
+            End If
+        End If
+    Next r
+
+    Dim res As New Collection
+    Dim i As Long
+    Dim v As String
+
+    For i = 1 To pAll.count
+        v = NormalizeName(CStr(pAll(i)))
+        If Not CollExistsByValue(pWithFill, v) Then
+            res.Add pAll(i)
+        End If
+    Next i
+
+    Set GetNoFillPnrForKommun = res
+End Function
+
+Private Function RowKey_All(ByVal ws As Worksheet, ByVal r As Long, ByVal lastC As Long) As String
+    Dim c As Long, parts() As String
+    ReDim parts(1 To lastC)
+    For c = 1 To lastC
+        parts(c) = KeyNorm(ws.Cells(r, c).Value2)
+    Next c
+    RowKey_All = Join(parts, "§")
+End Function
+
+Private Function KeyNorm(ByVal v As Variant) As String
+    Dim s As String
+    If IsError(v) Then
+        KeyNorm = "#ERR"
+        Exit Function
+    End If
+    s = Trim$(CStr(v))
+    s = Replace$(s, Chr(160), " ")
+    s = LCase$(s)
+    Do While InStr(s, "  ") > 0
+        s = Replace$(s, "  ", " ")
+    Loop
+    KeyNorm = s
+End Function
+
+' ======================== HJÄLP ========================
+Private Sub DeleteSkolpengSheets(ByVal alsoDeleteLog As Boolean)
+    Dim ws As Worksheet, toDel As New Collection, i As Long
+
+    For Each ws In ActiveWorkbook.Worksheets
+        If Not PRESERVE_AVSTAMNING_SHEETS Then
+            If Left$(ws.name, 11) = "Avstämning-" Then
+                toDel.Add ws.name
+            End If
+        End If
+
+        If alsoDeleteLog And ws.name = "Systemlogg" Then
+            toDel.Add ws.name
+        End If
+    Next ws
+
+    If toDel.count = 0 Then Exit Sub
+
+    Application.DisplayAlerts = False
+    For i = 1 To toDel.count
+        On Error Resume Next
+        ActiveWorkbook.Worksheets(CStr(toDel(i))).Delete
+        On Error GoTo 0
+    Next i
+    Application.DisplayAlerts = True
+End Sub
+
+Private Function FindImportSheet(ByVal wb As Workbook) As Worksheet
+    Dim ws As Worksheet, nm As String
+    On Error Resume Next: Set FindImportSheet = wb.Worksheets(IMPORT_PRI): On Error GoTo 0
+    If Not FindImportSheet Is Nothing Then Exit Function
+    On Error Resume Next: Set FindImportSheet = wb.Worksheets(IMPORT_ALT): On Error GoTo 0
+    If Not FindImportSheet Is Nothing Then Exit Function
+    For Each ws In wb.Worksheets
+        nm = LCase(ws.name)
+        If InStr(nm, LCase(IMPORT_PRI)) > 0 Or InStr(nm, LCase(IMPORT_ALT)) > 0 Then
+            Set FindImportSheet = ws: Exit Function
+        End If
+    Next ws
+End Function
+
+Private Function FindHeaderRow(ByVal ws As Worksheet, ByVal maxRows As Long) As Long
+    Dim r As Long, lastC As Long, nonEmpty As Long, c As Long, limitR As Long
+    If maxRows < 1 Then maxRows = 1
+    limitR = maxRows: If ws.rows.count < limitR Then limitR = ws.rows.count
+    For r = 1 To limitR
+        lastC = GetLastColInRow(ws, r)
+        If lastC < 1 Then lastC = 1
+        nonEmpty = 0
+        For c = 1 To lastC
+            If Trim$(CStr(ws.Cells(r, c).Value2)) <> "" Then nonEmpty = nonEmpty + 1
+        Next c
+        If nonEmpty >= 2 Then FindHeaderRow = r: Exit Function
+    Next r
+    FindHeaderRow = 0
+End Function
+
+Private Function FindHeaderColMulti(ws As Worksheet, headers As Variant, headerRow As Long) As Long
+    Dim c As Long, maxC As Long, i As Long, cellTxt As String
+    If IsEmpty(headers) Then Exit Function
+    If headerRow < 1 Then headerRow = 1
+    maxC = GetLastColInRow(ws, headerRow)
+    If maxC < 1 Then maxC = 1
+    For c = 1 To maxC
+        cellTxt = NormalizeName(CStr(ws.Cells(headerRow, c).Value2))
+        For i = LBound(headers) To UBound(headers)
+            If StrComp(cellTxt, NormalizeName(CStr(headers(i))), vbTextCompare) = 0 Then
+                FindHeaderColMulti = c: Exit Function
+            End If
+        Next i
+    Next c
+    FindHeaderColMulti = 0
+End Function
+
+Private Function GetLastColInRow(ByVal ws As Worksheet, ByVal rowNum As Long) As Long
+    GetLastColInRow = ws.Cells(rowNum, ws.Columns.count).End(xlToLeft).Column
+End Function
+
+Private Function GetLastRow(ws As Worksheet, keyCol As Long, headerRow As Long) As Long
+    Dim r As Long
+    If keyCol < 1 Then keyCol = 1
+    If headerRow < 1 Then headerRow = 1
+    r = ws.Cells(ws.rows.count, keyCol).End(xlUp).Row
+    If r < headerRow Then r = ws.UsedRange.rows(ws.UsedRange.rows.count).Row
+    If r < headerRow Then r = headerRow
+    GetLastRow = r
+End Function
+
+Private Function NormalizeName(ByVal s As String) As String
+    Dim t As String
+    t = Replace$(s, Chr(160), " ")
+    t = Replace$(t, "ä", "a"): t = Replace$(t, "Ä", "A")
+    t = Replace$(t, "å", "a"): t = Replace$(t, "Å", "A")
+    t = Replace$(t, "ö", "o"): t = Replace$(t, "Ö", "O")
+    t = Trim$(t)
+    Do While InStr(t, "  ") > 0
+        t = Replace$(t, "  ", " ")
+    Loop
+    NormalizeName = t
+End Function
+
+Private Function GetOrCreateKommunSheet(ByVal wb As Workbook, ByVal Kommun As String) As Worksheet
+    Dim nm As String: nm = "Avstämning- " & SanitizeSheetName(Kommun)
+    Dim ws As Worksheet
+    On Error Resume Next: Set ws = wb.Worksheets(nm): On Error GoTo 0
+    If ws Is Nothing Then
+        Set ws = wb.Worksheets.Add(After:=wb.Worksheets(wb.Worksheets.count))
+        On Error Resume Next
+        ws.name = nm
+        If Err.Number <> 0 Then ws.name = Left$(nm, 28) & "..."
+        On Error GoTo 0
+    End If
+    ws.Tab.Color = rgb(198, 217, 241)
+    Set GetOrCreateKommunSheet = ws
+End Function
+
+Private Function SanitizeSheetName(ByVal s As String) As String
+    Dim t As String
+    t = Trim$(s)
+    t = Replace(t, ":", " ")
+    t = Replace(t, "\", " ")
+    t = Replace(t, "/", " ")
+    t = Replace(t, "?", " ")
+    t = Replace(t, "*", " ")
+    t = Replace(t, "[", " ")
+    t = Replace(t, "]", " ")
+    Do While InStr(t, "  ") > 0
+        t = Replace(t, "  ", " ")
+    Loop
+    If Len(t) = 0 Then t = "Okänd kommun"
+    If Len(t) > 31 - Len("Avstämning- ") Then t = Left$(t, 31 - Len("Avstämning- "))
+    SanitizeSheetName = t
+End Function
+
+Private Function NextAppendRow(ByVal ws As Worksheet) As Long
+    Dim f As Range
+    Set f = ws.Cells.Find(What:="*", After:=ws.Cells(1, 1), LookIn:=xlFormulas, _
+                          LookAt:=xlPart, SearchOrder:=xlByRows, SearchDirection:=xlPrevious, MatchCase:=False)
+    If f Is Nothing Then NextAppendRow = 1 Else NextAppendRow = f.Row + 2
+End Function
+
+Private Function NextAppendRowTight(ByVal ws As Worksheet) As Long
+    Dim f As Range
+    Set f = ws.Cells.Find(What:="*", After:=ws.Cells(1, 1), LookIn:=xlFormulas, _
+                          LookAt:=xlPart, SearchOrder:=xlByRows, SearchDirection:=xlPrevious, MatchCase:=False)
+    If f Is Nothing Then NextAppendRowTight = 1 Else NextAppendRowTight = f.Row + 1
+End Function
+
+Private Function WriteTitle(ByVal ws As Worksheet, ByVal atRow As Long, ByVal txt As String, ByVal Big As Boolean) As Long
+    If atRow < 1 Then atRow = 1
+    With ws.Cells(atRow, 1)
+        .Value2 = txt
+        .Font.Bold = True
+        .Font.Size = IIf(Big, 14, 12)
+    End With
+    WriteTitle = atRow + 1
+End Function
+
+' ========= NYA HJÄLPARE FÖR ATT UPPDATERA SEKTIONSBLOCK =========
+Private Function FindSectionStartRow(ByVal ws As Worksheet, ByVal title As String) As Long
+    Dim lastRow As Long, r As Long
+    Dim f As Range
+
+    ' Hitta sista använda rad, hantera tomma blad utan fel 91
+    Set f = ws.Cells.Find(What:="*", After:=ws.Cells(1, 1), LookIn:=xlFormulas, _
+                          LookAt:=xlPart, SearchOrder:=xlByRows, SearchDirection:=xlPrevious, MatchCase:=False)
+
+    If f Is Nothing Then
+        FindSectionStartRow = 0
+        Exit Function
+    End If
+
+    lastRow = f.Row
+
+    For r = 1 To lastRow
+        If Trim$(CStr(ws.Cells(r, 1).Value2)) = title Then
+            FindSectionStartRow = r
+            Exit Function
+        End If
+    Next r
+    FindSectionStartRow = 0
+End Function
+
+Private Sub ClearSectionBlock(ByVal ws As Worksheet, ByVal startRow As Long)
+    If startRow <= 0 Then Exit Sub
+
+    Dim lastRow As Long
+    Dim r As Long
+    Dim endRow As Long
+
+    Dim f As Range
+    Set f = ws.Cells.Find(What:="*", After:=ws.Cells(1, 1), LookIn:=xlFormulas, _
+                          LookAt:=xlPart, SearchOrder:=xlByRows, SearchDirection:=xlPrevious, MatchCase:=False)
+    If f Is Nothing Then Exit Sub
+    lastRow = f.Row
+
+    endRow = lastRow
+
+    For r = startRow + 1 To lastRow
+        Select Case Trim$(CStr(ws.Cells(r, 1).Value2))
+            Case TITLE_MISSING, TITLE_MM, TITLE_FRITIDS, TITLE_NO_FUND
+                endRow = r - 1
+                Exit For
+        End Select
+    Next r
+
+    If endRow < startRow Then endRow = startRow
+
+    ws.rows(startRow & ":" & endRow).ClearContents
+End Sub
+
+' ==================== FÄRGHJÄLP ====================
+Private Function IsNoFill(ByVal c As Range) As Boolean
+    On Error Resume Next
+    If c.interior.pattern = xlNone Then IsNoFill = True
+    If c.interior.ColorIndex = xlColorIndexNone Then IsNoFill = True
+    If c.interior.ColorIndex = -4142 Then IsNoFill = True
+End Function
+
+Private Function IsYellow(ByVal c As Range) As Boolean
+    On Error Resume Next
+    If c.interior.Color = YELLOW_LONG Then IsYellow = True
+    If c.interior.ColorIndex = 6 Then IsYellow = True
+End Function
+
+Private Function IsRed(ByVal c As Range) As Boolean
+    On Error Resume Next
+    If c.interior.ColorIndex = 3 Then IsRed = True: Exit Function
+    Dim clr As Long: clr = c.interior.Color
+    If clr = 0 Then Exit Function
+    Dim r As Long, g As Long, b As Long
+    r = clr Mod 256
+    g = (clr \ 256) Mod 256
+    b = (clr \ 65536) Mod 256
+    If r > (g + b) And r >= 120 Then IsRed = True
+End Function
+
+Private Function HasDataNoFill(ByVal cell As Range) As Boolean
+    Dim hasData As Boolean, noFill As Boolean
+    hasData = Len(Trim$(CStr(cell.Value2))) > 0
+    noFill = (cell.interior.ColorIndex = xlColorIndexNone) Or _
+             (cell.interior.pattern = xlNone) Or _
+             (cell.interior.ColorIndex = -4142)
+    HasDataNoFill = (hasData And noFill)
+End Function
+
+' ==================== ÖVRIG HJÄLP ====================
+Private Function isThreeLetters(ByVal s As String) As Boolean
+    If Len(s) <> 3 Then
+        isThreeLetters = False
+    Else
+        isThreeLetters = (s Like "[A-Za-z][A-Za-z][A-Za-z]")
+    End If
+End Function
+
+Private Function IsTwenty(ByVal v As Variant) As Boolean
+    If IsNumeric(v) Then
+        IsTwenty = (Abs(CDbl(v) - 20#) < 1E-07)
+    Else
+        IsTwenty = (Trim$(CStr(v)) = "20")
+    End If
+End Function
+
+Private Function CollExists(ByVal coll As Collection, ByVal key As String) As Boolean
+    Dim v As Variant
+    On Error Resume Next
+    v = coll.Item(key)
+    CollExists = (Err.Number = 0)
+    Err.Clear
+    On Error GoTo 0
+End Function
+
+Private Function CollExistsByValue(ByVal coll As Collection, ByVal valueKey As String) As Boolean
+    Dim i As Long
+    For i = 1 To coll.count
+        If StrComp(NormalizeName(CStr(coll(i))), NormalizeName(valueKey), vbTextCompare) = 0 Then
+            CollExistsByValue = True
+            Exit Function
+        End If
+    Next i
+    CollExistsByValue = False
+End Function
+
+Private Sub AddUnique(ByRef coll As Collection, ByVal key As String)
+    Dim k As String: k = NormalizeName(key)
+    Dim i As Long
+    For i = 1 To coll.count
+        If StrComp(NormalizeName(CStr(coll(i))), k, vbTextCompare) = 0 Then Exit Sub
+    Next i
+    coll.Add key
+End Sub
+
+Private Function ExtractMunicipalityCandidate(ByVal sheetName As String) As String
+    Dim s As String: s = sheetName
+    Dim p1 As Long, p2 As Long, parts() As String, candidate As String
+
+    p1 = InStr(1, s, """", vbBinaryCompare)
+    If p1 > 0 Then
+        p2 = InStr(p1 + 1, s, """", vbBinaryCompare)
+        If p2 > p1 Then candidate = mid$(s, p1 + 1, p2 - p1 - 1)
+    End If
+    If Len(candidate) = 0 Then
+        parts = Split(s, " ")
+        If UBound(parts) >= 1 Then candidate = parts(1)
+    End If
+
+    candidate = Replace$(candidate, ".xlsx", "", , , vbTextCompare)
+    candidate = Replace$(candidate, "-", " ")
+    candidate = Replace$(candidate, "(", " ")
+    candidate = Replace$(candidate, ")", " ")
+    candidate = Replace$(candidate, "[", " ")
+    candidate = Replace$(candidate, "]", " ")
+    candidate = NormalizeName(candidate)
+    ExtractMunicipalityCandidate = candidate
+End Function
+
+Private Function FuzzyBestMatchFromCollectionWithScore(ByVal inputStr As String, ByVal coll As Collection, _
+                                                       ByRef bestScoreOut As Double) As String
+    Dim bestScore As Double, score As Double, bestKey As String, i As Long
+    Dim needle As String: needle = LCase$(NormalizeName(inputStr))
+    bestScore = 0: bestKey = "": bestScoreOut = 0
+    If (coll Is Nothing) Or coll.count = 0 Then
+        FuzzyBestMatchFromCollectionWithScore = "": Exit Function
+    End If
+    For i = 1 To coll.count
+        score = SimilarityScore(needle, LCase$(NormalizeName(CStr(coll(i)))))
+        If score > bestScore Then
+            bestScore = score: bestKey = CStr(coll(i))
+        End If
+    Next i
+    bestScoreOut = bestScore
+    FuzzyBestMatchFromCollectionWithScore = bestKey
+End Function
+
+Private Function SimilarityScore(a As String, b As String) As Double
+    Dim d As Long, maxLen As Long
+    If Len(a) > Len(b) Then maxLen = Len(a) Else maxLen = Len(b)
+    If maxLen = 0 Then SimilarityScore = 1: Exit Function
+    d = LevenshteinDistance(a, b)
+    SimilarityScore = 1 - (d / maxLen)
+End Function
+
+Private Function LevenshteinDistance(s As String, t As String) As Long
+    Dim d() As Long, m As Long, n As Long
+    Dim i As Long, j As Long, cost As Long
+    m = Len(s): n = Len(t)
+    ReDim d(0 To m, 0 To n)
+    For i = 0 To m: d(i, 0) = i: Next i
+    For j = 0 To n: d(0, j) = j: Next j
+    For i = 1 To m
+        For j = 1 To n
+            If mid$(s, i, 1) = mid$(t, j, 1) Then cost = 0 Else cost = 1
+            d(i, j) = Application.WorksheetFunction.Min( _
+                        d(i - 1, j) + 1, _
+                        d(i, j - 1) + 1, _
+                        d(i - 1, j - 1) + cost)
+        Next j
+    Next i
+    LevenshteinDistance = d(m, n)
+End Function
+
+' ==================== MÅNADSFILTER ====================
+Private Function IsValidMonthCode(ByVal s As String) As Boolean
+    s = Trim$(s)
+    If Len(s) <> 6 Then Exit Function
+    If Not IsNumeric(s) Then Exit Function
+
+    Dim y As Long, m As Long
+    y = CLng(Left$(s, 4))
+    m = CLng(Right$(s, 2))
+    If y < 1900 Or y > 2100 Then Exit Function
+    If m < 1 Or m > 12 Then Exit Function
+
+    IsValidMonthCode = True
+End Function
+
+Private Function ExtractMonthCode(ByVal v As Variant) As String
+    Dim s As String
+    s = Trim$(CStr(v))
+    If s = "" Then Exit Function
+
+    If IsDate(v) Then
+        ExtractMonthCode = Format$(CDate(v), "yyyymm")
+        Exit Function
+    End If
+
+    Dim i As Long, digits As String
+    For i = 1 To Len(s)
+        If mid$(s, i, 1) Like "[0-9]" Then
+            digits = digits & mid$(s, i, 1)
+        End If
+    Next i
+
+    If Len(digits) >= 6 Then
+        ExtractMonthCode = Left$(digits, 6)
+    Else
+        ExtractMonthCode = ""
+    End If
+End Function
+
+Private Function RowMatchesMonth(ByVal ws As Worksheet, ByVal rowIndex As Long, ByVal hdr As Long) As Boolean
+    Static colPeriod As Long
+
+    If colPeriod = 0 Then
+        colPeriod = FindHeaderColMulti(ws, Array(HDR_PERIOD), hdr)
+        If colPeriod = 0 Then
+            RowMatchesMonth = True
+            Exit Function
+        End If
+    End If
+
+    Dim v As Variant
+    v = ws.Cells(rowIndex, colPeriod).Value2
+
+    Dim m As String
+    m = ExtractMonthCode(v)
+
+    If m = "" Or gMonthFilter = "" Then
+        RowMatchesMonth = True
+    Else
+        RowMatchesMonth = (m = gMonthFilter)
+    End If
+End Function
+
